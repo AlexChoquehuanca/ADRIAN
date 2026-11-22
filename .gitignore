@@ -147,3 +147,4 @@ dist
 
 # Audios generados por pdf-a-audio
 audios/
+__pycache__/
