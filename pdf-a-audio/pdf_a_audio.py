@@ -9,7 +9,12 @@ Uso:
 """
 import argparse
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
+import unicodedata
+from collections import Counter
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -26,10 +31,38 @@ def rango_paginas(texto, total):
 
 def extraer_texto(ruta_pdf, paginas=None):
     lector = PdfReader(ruta_pdf)
+    total = len(lector.pages)
+    todas = [(p.extract_text() or "").split("\n") for p in lector.pages]
+
+    def norm(linea):
+        return re.sub(r"\s+", " ", linea).strip()
+
+    # Encabezados/pies que se repiten en muchas páginas (títulos corridos, etc.)
+    # Se agrupan por los primeros 40 caracteres para atrapar variantes como
+    # "Título del libro   Capítulo 1", "Título del libro   Capítulo 2"...
+    def clave(linea):
+        return norm(linea)[:40]
+
+    frecuencia = Counter(c for lineas in todas
+                         for c in {clave(x) for x in lineas if 15 < len(norm(x)) < 120})
+    umbral = max(3, total // 5)
+    repetidas = {c for c, n in frecuencia.items() if n >= umbral}
+
+    def sirve(linea):
+        l = norm(linea)
+        if not l or (len(l) < 120 and clave(l) in repetidas):
+            return False
+        # números sueltos (páginas) y líneas de gráficos/tablas: casi todo números
+        tokens = l.split()
+        numericos = sum(bool(re.fullmatch(r"[\d.,%()+\-–]+", t)) for t in tokens)
+        return numericos / len(tokens) <= 0.6
+
     partes = []
-    for i in rango_paginas(paginas, len(lector.pages)):
-        partes.append(lector.pages[i].extract_text() or "")
-    texto = "\n".join(partes)
+    for i in rango_paginas(paginas, total):
+        lineas = [l for l in todas[i] if sirve(l)]
+        partes.append("\n".join(lineas))
+    texto = unicodedata.normalize("NFKC", "\n".join(partes))  # ligaduras ﬁ, ﬂ...
+    texto = re.sub(r"(?<=\w)�(?=\w)", "ti", texto)       # ligadura "ti" mal codificada
     texto = re.sub(r"-\n(\w)", r"\1", texto)        # une palabras cortadas con guion
     texto = re.sub(r"(?<!\n)\n(?!\n)", " ", texto)  # saltos de línea dentro de un párrafo
     texto = re.sub(r"[ \t]+", " ", texto)
@@ -45,19 +78,48 @@ def con_gtts(texto, salida, idioma):
         sys.exit(f"gTTS falló ({e}). ¿Hay conexión a internet? Prueba con --motor offline.")
 
 
-def con_offline(texto, salida, idioma, velocidad):
+def wav_con_espeak(texto, wav, idioma, velocidad):
+    """Linux: espeak-ng directo (más fiable que pyttsx3 con textos largos)."""
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", encoding="utf-8", delete=False) as f:
+        f.write(texto)
+    try:
+        subprocess.run(["espeak-ng", "-v", idioma, "-s", str(velocidad),
+                        "-w", str(wav), "-f", f.name], check=True)
+    finally:
+        Path(f.name).unlink(missing_ok=True)
+
+
+def wav_con_pyttsx3(texto, wav, idioma, velocidad):
+    """Windows/macOS: voces del sistema."""
     import pyttsx3
     motor = pyttsx3.init()
     for voz in motor.getProperty("voices"):
         idiomas = [str(l).lower().replace("_", "-") for l in (voz.languages or [])]
         nombre = f"{voz.id} {voz.name}".lower()
         if any(l == idioma or l.startswith(idioma + "-") for l in idiomas) or \
-                (not idiomas and ("spanish" in nombre or "español" in nombre) and idioma == "es"):
+                (not idiomas and idioma.startswith("es") and ("spanish" in nombre or "español" in nombre)):
             motor.setProperty("voice", voz.id)
             break
     motor.setProperty("rate", velocidad)
-    motor.save_to_file(texto, str(salida))
+    motor.save_to_file(texto, str(wav))
     motor.runAndWait()
+
+
+def con_offline(texto, salida, idioma, velocidad):
+    generar = wav_con_espeak if shutil.which("espeak-ng") else wav_con_pyttsx3
+    if Path(salida).suffix.lower() != ".mp3":
+        generar(texto, salida, idioma, velocidad)
+        return
+    # El motor offline genera WAV; si se pidió MP3, se convierte con ffmpeg
+    if not shutil.which("ffmpeg"):
+        sys.exit("Para guardar MP3 en modo offline hace falta ffmpeg (o usa -o archivo.wav).")
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = Path(tmp) / "audio.wav"
+        generar(texto, wav, idioma, velocidad)
+        if not wav.exists():
+            sys.exit("El motor de voz no generó audio.")
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav),
+                        "-b:a", "64k", str(salida)], check=True)
 
 
 def main():

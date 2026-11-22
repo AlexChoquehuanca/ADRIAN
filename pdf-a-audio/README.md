@@ -26,6 +26,7 @@ python pdf-a-audio/pdf_a_audio.py libro.pdf --idioma en
 |---|---|
 | `pypdf` | Extraer el texto del PDF |
 | `gTTS` | Voz natural de Google Translate (MP3, necesita internet) |
-| `pyttsx3` | Voz del sistema, sin internet (WAV) |
+| `pyttsx3` | Voz del sistema, sin internet (WAV o MP3 con ffmpeg). En Linux usa `espeak-ng` directamente |
+| `fonttools` | Lee bien las fuentes de algunos PDF |
 
 Si el PDF es escaneado (imágenes, sin texto seleccionable) primero hay que aplicarle OCR.

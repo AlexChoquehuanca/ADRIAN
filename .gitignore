@@ -144,3 +144,6 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Audios generados por pdf-a-audio
+audios/
